@@ -17,6 +17,7 @@ interface RideData {
   publicValue2: number;
   isVerified?: boolean;
   decryptedValue?: number;
+  encryptedValueHandle?: string;
   matchScore?: number;
 }
 
@@ -39,13 +40,11 @@ const App: React.FC = () => {
     distance: "" 
   });
   const [selectedRide, setSelectedRide] = useState<RideData | null>(null);
-  const [decryptedDistance, setDecryptedDistance] = useState<number | null>(null);
-  const [isDecrypting, setIsDecrypting] = useState(false);
-  const [contractAddress, setContractAddress] = useState("");
-  const [fhevmInitializing, setFhevmInitializing] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState("all");
-  const [stats, setStats] = useState({ total: 0, verified: 0, avgDistance: 0 });
+  const [filterVerified, setFilterVerified] = useState(false);
+  const [userHistory, setUserHistory] = useState<RideData[]>([]);
+  const [currentPage, setCurrentPage] = useState(1);
+  const ridesPerPage = 5;
 
   const { status, initialize, isInitialized } = useFhevm();
   const { encrypt, isEncrypting } = useEncrypt();
@@ -53,10 +52,8 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const initFhevmAfterConnection = async () => {
-      if (!isConnected || isInitialized || fhevmInitializing) return;
-      
+      if (!isConnected || isInitialized) return;
       try {
-        setFhevmInitializing(true);
         await initialize();
       } catch (error) {
         setTransactionStatus({ 
@@ -65,13 +62,11 @@ const App: React.FC = () => {
           message: "FHEVM initialization failed" 
         });
         setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
-      } finally {
-        setFhevmInitializing(false);
       }
     };
 
     initFhevmAfterConnection();
-  }, [isConnected, isInitialized, initialize, fhevmInitializing]);
+  }, [isConnected, isInitialized, initialize]);
 
   useEffect(() => {
     const loadDataAndContract = async () => {
@@ -79,11 +74,8 @@ const App: React.FC = () => {
         setLoading(false);
         return;
       }
-      
       try {
         await loadData();
-        const contract = await getContractReadOnly();
-        if (contract) setContractAddress(await contract.getAddress());
       } catch (error) {
         console.error('Failed to load data:', error);
       } finally {
@@ -112,14 +104,14 @@ const App: React.FC = () => {
             id: businessId,
             name: businessData.name,
             startLocation: `Location ${businessData.publicValue1}`,
-            endLocation: `Destination ${businessData.publicValue2}`,
+            endLocation: `Location ${businessData.publicValue2}`,
             timestamp: Number(businessData.timestamp),
             creator: businessData.creator,
             publicValue1: Number(businessData.publicValue1) || 0,
             publicValue2: Number(businessData.publicValue2) || 0,
             isVerified: businessData.isVerified,
             decryptedValue: Number(businessData.decryptedValue) || 0,
-            matchScore: Math.min(100, Math.round((Number(businessData.publicValue1) + Number(businessData.publicValue2)) * 3))
+            matchScore: Math.round((Number(businessData.publicValue1) + Number(businessData.publicValue2)) * 5)
           });
         } catch (e) {
           console.error('Error loading business data:', e);
@@ -127,20 +119,15 @@ const App: React.FC = () => {
       }
       
       setRides(ridesList);
-      updateStats(ridesList);
+      if (address) {
+        setUserHistory(ridesList.filter(ride => ride.creator.toLowerCase() === address.toLowerCase()));
+      }
     } catch (e) {
       setTransactionStatus({ visible: true, status: "error", message: "Failed to load data" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     } finally { 
       setIsRefreshing(false); 
     }
-  };
-
-  const updateStats = (ridesList: RideData[]) => {
-    const total = ridesList.length;
-    const verified = ridesList.filter(r => r.isVerified).length;
-    const avgDistance = total > 0 ? ridesList.reduce((sum, r) => sum + r.publicValue1, 0) / total : 0;
-    setStats({ total, verified, avgDistance });
   };
 
   const createRide = async () => {
@@ -151,7 +138,7 @@ const App: React.FC = () => {
     }
     
     setCreatingRide(true);
-    setTransactionStatus({ visible: true, status: "pending", message: "Creating encrypted ride..." });
+    setTransactionStatus({ visible: true, status: "pending", message: "Creating ride with FHE encryption..." });
     
     try {
       const contract = await getContractWithSigner();
@@ -160,19 +147,19 @@ const App: React.FC = () => {
       const distanceValue = parseInt(newRideData.distance) || 0;
       const businessId = `ride-${Date.now()}`;
       
-      const encryptedResult = await encrypt(contractAddress, address, distanceValue);
+      const encryptedResult = await encrypt(await contract.getAddress(), address, distanceValue);
       
       const tx = await contract.createBusinessData(
         businessId,
         newRideData.name,
         encryptedResult.encryptedData,
         encryptedResult.proof,
-        Math.floor(Math.random() * 10) + 1,
-        Math.floor(Math.random() * 10) + 1,
+        Math.floor(Math.random() * 100) + 1,
+        Math.floor(Math.random() * 100) + 1,
         `Ride from ${newRideData.startLocation} to ${newRideData.endLocation}`
       );
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Waiting for confirmation..." });
+      setTransactionStatus({ visible: true, status: "pending", message: "Waiting for transaction confirmation..." });
       await tx.wait();
       
       setTransactionStatus({ visible: true, status: "success", message: "Ride created successfully!" });
@@ -185,8 +172,8 @@ const App: React.FC = () => {
       setNewRideData({ name: "", startLocation: "", endLocation: "", distance: "" });
     } catch (e: any) {
       const errorMessage = e.message?.includes("user rejected transaction") 
-        ? "Transaction rejected" 
-        : "Creation failed";
+        ? "Transaction rejected by user" 
+        : "Submission failed: " + (e.message || "Unknown error");
       setTransactionStatus({ visible: true, status: "error", message: errorMessage });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     } finally { 
@@ -201,7 +188,6 @@ const App: React.FC = () => {
       return null; 
     }
     
-    setIsDecrypting(true);
     try {
       const contractRead = await getContractReadOnly();
       if (!contractRead) return null;
@@ -209,8 +195,14 @@ const App: React.FC = () => {
       const businessData = await contractRead.getBusinessData(businessId);
       if (businessData.isVerified) {
         const storedValue = Number(businessData.decryptedValue) || 0;
-        setTransactionStatus({ visible: true, status: "success", message: "Data already verified" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+        setTransactionStatus({ 
+          visible: true, 
+          status: "success", 
+          message: "Data already verified on-chain" 
+        });
+        setTimeout(() => {
+          setTransactionStatus({ visible: false, status: "pending", message: "" });
+        }, 2000);
         return storedValue;
       }
       
@@ -221,17 +213,18 @@ const App: React.FC = () => {
       
       const result = await verifyDecryption(
         [encryptedValueHandle],
-        contractAddress,
+        await contractWrite.getAddress(),
         (abiEncodedClearValues: string, decryptionProof: string) => 
           contractWrite.verifyDecryption(businessId, abiEncodedClearValues, decryptionProof)
       );
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Verifying decryption..." });
+      setTransactionStatus({ visible: true, status: "pending", message: "Verifying decryption on-chain..." });
       
       const clearValue = result.decryptionResult.clearValues[encryptedValueHandle];
+      
       await loadData();
       
-      setTransactionStatus({ visible: true, status: "success", message: "Data decrypted successfully!" });
+      setTransactionStatus({ visible: true, status: "success", message: "Data decrypted and verified successfully!" });
       setTimeout(() => {
         setTransactionStatus({ visible: false, status: "pending", message: "" });
       }, 2000);
@@ -240,17 +233,25 @@ const App: React.FC = () => {
       
     } catch (e: any) { 
       if (e.message?.includes("Data already verified")) {
-        setTransactionStatus({ visible: true, status: "success", message: "Data is already verified" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+        setTransactionStatus({ 
+          visible: true, 
+          status: "success", 
+          message: "Data is already verified on-chain" 
+        });
+        setTimeout(() => {
+          setTransactionStatus({ visible: false, status: "pending", message: "" });
+        }, 2000);
         await loadData();
         return null;
       }
       
-      setTransactionStatus({ visible: true, status: "error", message: "Decryption failed" });
+      setTransactionStatus({ 
+        visible: true, 
+        status: "error", 
+        message: "Decryption failed: " + (e.message || "Unknown error") 
+      });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
       return null; 
-    } finally { 
-      setIsDecrypting(false); 
     }
   };
 
@@ -260,8 +261,14 @@ const App: React.FC = () => {
       if (!contract) return;
       
       const isAvailable = await contract.isAvailable();
-      setTransactionStatus({ visible: true, status: "success", message: "System is available!" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+      setTransactionStatus({ 
+        visible: true, 
+        status: "success", 
+        message: `Contract is available: ${isAvailable}` 
+      });
+      setTimeout(() => {
+        setTransactionStatus({ visible: false, status: "pending", message: "" });
+      }, 2000);
     } catch (e) {
       setTransactionStatus({ visible: true, status: "error", message: "Availability check failed" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
@@ -272,19 +279,20 @@ const App: React.FC = () => {
     const matchesSearch = ride.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          ride.startLocation.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          ride.endLocation.toLowerCase().includes(searchTerm.toLowerCase());
-    
-    if (activeTab === "verified") return matchesSearch && ride.isVerified;
-    if (activeTab === "pending") return matchesSearch && !ride.isVerified;
-    return matchesSearch;
+    const matchesFilter = !filterVerified || ride.isVerified;
+    return matchesSearch && matchesFilter;
   });
+
+  const paginatedRides = filteredRides.slice((currentPage - 1) * ridesPerPage, currentPage * ridesPerPage);
+  const totalPages = Math.ceil(filteredRides.length / ridesPerPage);
 
   if (!isConnected) {
     return (
       <div className="app-container">
         <header className="app-header">
           <div className="logo">
-            <h1>RideShare_Z 🚗</h1>
-            <span>Private Ride Sharing</span>
+            <h1>Private Ride Sharing 🔐</h1>
+            <p>FHE-Protected Carpool Matching</p>
           </div>
           <div className="header-actions">
             <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
@@ -293,9 +301,9 @@ const App: React.FC = () => {
         
         <div className="connection-prompt">
           <div className="connection-content">
-            <div className="connection-icon">🔐</div>
+            <div className="connection-icon">🚗</div>
             <h2>Connect Your Wallet to Start</h2>
-            <p>Private ride sharing with encrypted location matching using Zama FHE technology</p>
+            <p>Join our privacy-focused ride sharing platform with fully homomorphic encryption</p>
             <div className="connection-steps">
               <div className="step">
                 <span>1</span>
@@ -303,11 +311,11 @@ const App: React.FC = () => {
               </div>
               <div className="step">
                 <span>2</span>
-                <p>Create encrypted ride offers with hidden locations</p>
+                <p>Create encrypted ride requests with location privacy</p>
               </div>
               <div className="step">
                 <span>3</span>
-                <p>Match with compatible riders privately</p>
+                <p>Match with compatible riders using homomorphic computation</p>
               </div>
             </div>
           </div>
@@ -316,12 +324,12 @@ const App: React.FC = () => {
     );
   }
 
-  if (!isInitialized || fhevmInitializing) {
+  if (!isInitialized) {
     return (
       <div className="loading-screen">
         <div className="fhe-spinner"></div>
         <p>Initializing FHE Encryption System...</p>
-        <p className="loading-note">Securing your ride data</p>
+        <p>Status: {status}</p>
       </div>
     );
   }
@@ -329,7 +337,7 @@ const App: React.FC = () => {
   if (loading) return (
     <div className="loading-screen">
       <div className="fhe-spinner"></div>
-      <p>Loading encrypted ride sharing...</p>
+      <p>Loading encrypted ride sharing platform...</p>
     </div>
   );
 
@@ -337,15 +345,18 @@ const App: React.FC = () => {
     <div className="app-container">
       <header className="app-header">
         <div className="logo">
-          <h1>RideShare_Z 🚗</h1>
-          <span>隱私拼車匹配</span>
+          <h1>Private Ride Sharing 🔐</h1>
+          <p>FHE-Protected Carpool Matching</p>
         </div>
         
         <div className="header-actions">
           <button onClick={checkAvailability} className="availability-btn">
-            Check System
+            Check Availability
           </button>
-          <button onClick={() => setShowCreateModal(true)} className="create-btn">
+          <button 
+            onClick={() => setShowCreateModal(true)} 
+            className="create-btn"
+          >
             + New Ride
           </button>
           <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
@@ -353,60 +364,55 @@ const App: React.FC = () => {
       </header>
       
       <div className="main-content">
-        <div className="stats-panels">
-          <div className="stat-panel">
+        <div className="stats-section">
+          <div className="stat-card">
             <h3>Total Rides</h3>
-            <div className="stat-value">{stats.total}</div>
+            <div className="stat-value">{rides.length}</div>
           </div>
-          <div className="stat-panel">
+          <div className="stat-card">
             <h3>Verified Data</h3>
-            <div className="stat-value">{stats.verified}</div>
+            <div className="stat-value">{rides.filter(r => r.isVerified).length}</div>
           </div>
-          <div className="stat-panel">
-            <h3>Avg Distance</h3>
-            <div className="stat-value">{stats.avgDistance.toFixed(1)}km</div>
+          <div className="stat-card">
+            <h3>Your Rides</h3>
+            <div className="stat-value">{userHistory.length}</div>
           </div>
         </div>
 
-        <div className="content-section">
-          <div className="section-header">
-            <h2>Available Rides</h2>
-            <div className="controls">
-              <input 
-                type="text"
-                placeholder="Search rides..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="search-input"
-              />
-              <div className="tab-buttons">
-                <button 
-                  className={activeTab === "all" ? "active" : ""}
-                  onClick={() => setActiveTab("all")}
-                >
-                  All
-                </button>
-                <button 
-                  className={activeTab === "verified" ? "active" : ""}
-                  onClick={() => setActiveTab("verified")}
-                >
-                  Verified
-                </button>
-                <button 
-                  className={activeTab === "pending" ? "active" : ""}
-                  onClick={() => setActiveTab("pending")}
-                >
-                  Pending
-                </button>
-              </div>
-              <button onClick={loadData} className="refresh-btn" disabled={isRefreshing}>
-                {isRefreshing ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-          </div>
+        <div className="project-intro">
+          <h2>FHE-Protected Ride Sharing</h2>
+          <p>Our platform uses Fully Homomorphic Encryption to match riders while keeping locations private. 
+          Start and end points are encrypted, and matching happens through homomorphic computation without revealing sensitive data.</p>
+        </div>
 
-          <div className="rides-grid">
-            {filteredRides.length === 0 ? (
+        <div className="controls-section">
+          <div className="search-filter">
+            <input
+              type="text"
+              placeholder="Search rides..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="search-input"
+            />
+            <label className="filter-checkbox">
+              <input
+                type="checkbox"
+                checked={filterVerified}
+                onChange={(e) => setFilterVerified(e.target.checked)}
+              />
+              Verified Only
+            </label>
+          </div>
+          
+          <button onClick={loadData} className="refresh-btn" disabled={isRefreshing}>
+            {isRefreshing ? "Refreshing..." : "Refresh Data"}
+          </button>
+        </div>
+
+        <div className="rides-section">
+          <h2>Available Rides</h2>
+          <div className="rides-list">
+            {paginatedRides.length === 0 ? (
               <div className="no-rides">
                 <p>No rides found</p>
                 <button onClick={() => setShowCreateModal(true)} className="create-btn">
@@ -414,95 +420,93 @@ const App: React.FC = () => {
                 </button>
               </div>
             ) : (
-              filteredRides.map((ride) => (
+              paginatedRides.map((ride) => (
                 <div 
-                  key={ride.id} 
+                  key={ride.id}
                   className={`ride-card ${ride.isVerified ? 'verified' : ''}`}
                   onClick={() => setSelectedRide(ride)}
                 >
-                  <div className="card-header">
+                  <div className="ride-header">
                     <h3>{ride.name}</h3>
-                    <span className={`status ${ride.isVerified ? 'verified' : 'pending'}`}>
-                      {ride.isVerified ? '✅ Verified' : '🔒 Encrypted'}
-                    </span>
+                    <span className="match-score">{ride.matchScore}% Match</span>
                   </div>
-                  <div className="card-content">
-                    <div className="route">
-                      <span>📍 {ride.startLocation}</span>
-                      <span>→</span>
-                      <span>🎯 {ride.endLocation}</span>
-                    </div>
-                    <div className="match-score">
-                      Match Score: <strong>{ride.matchScore}%</strong>
-                    </div>
-                    <div className="creator">
-                      By: {ride.creator.substring(0, 6)}...{ride.creator.substring(38)}
-                    </div>
+                  <div className="ride-route">
+                    <span>📍 {ride.startLocation}</span>
+                    <span className="arrow">→</span>
+                    <span>🎯 {ride.endLocation}</span>
+                  </div>
+                  <div className="ride-meta">
+                    <span>{new Date(ride.timestamp * 1000).toLocaleDateString()}</span>
+                    <span className={`status ${ride.isVerified ? 'verified' : 'pending'}`}>
+                      {ride.isVerified ? '✅ Verified' : '🔓 Ready to Verify'}
+                    </span>
                   </div>
                 </div>
               ))
             )}
           </div>
+          
+          {totalPages > 1 && (
+            <div className="pagination">
+              <button 
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+              >
+                Previous
+              </button>
+              <span>Page {currentPage} of {totalPages}</span>
+              <button 
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+              >
+                Next
+              </button>
+            </div>
+          )}
         </div>
 
-        <div className="info-section">
-          <h3>FHE Ride Matching Process</h3>
-          <div className="process-flow">
-            <div className="process-step">
-              <div className="step-number">1</div>
-              <div className="step-content">
-                <h4>Encrypt Location Data</h4>
-                <p>Start and end locations are encrypted using Zama FHE</p>
+        <div className="user-history">
+          <h3>Your Ride History</h3>
+          <div className="history-list">
+            {userHistory.slice(0, 3).map(ride => (
+              <div key={ride.id} className="history-item">
+                <span>{ride.name}</span>
+                <span className={`status ${ride.isVerified ? 'verified' : 'pending'}`}>
+                  {ride.isVerified ? 'Verified' : 'Pending'}
+                </span>
               </div>
-            </div>
-            <div className="process-step">
-              <div className="step-number">2</div>
-              <div className="step-content">
-                <h4>Homomorphic Matching</h4>
-                <p>System computes route compatibility without decrypting data</p>
-              </div>
-            </div>
-            <div className="process-step">
-              <div className="step-number">3</div>
-              <div className="step-content">
-                <h4>Secure Verification</h4>
-                <p>Decrypt and verify matches on-chain when needed</p>
-              </div>
-            </div>
+            ))}
+            {userHistory.length === 0 && <p>No ride history</p>}
           </div>
         </div>
       </div>
 
       {showCreateModal && (
-        <CreateRideModal 
-          onSubmit={createRide}
-          onClose={() => setShowCreateModal(false)}
-          creating={creatingRide}
-          rideData={newRideData}
+        <ModalCreateRide 
+          onSubmit={createRide} 
+          onClose={() => setShowCreateModal(false)} 
+          creating={creatingRide} 
+          rideData={newRideData} 
           setRideData={setNewRideData}
           isEncrypting={isEncrypting}
         />
       )}
-
+      
       {selectedRide && (
         <RideDetailModal 
-          ride={selectedRide}
-          onClose={() => {
-            setSelectedRide(null);
-            setDecryptedDistance(null);
-          }}
-          decryptedDistance={decryptedDistance}
-          isDecrypting={isDecrypting || fheIsDecrypting}
+          ride={selectedRide} 
+          onClose={() => setSelectedRide(null)} 
           decryptData={() => decryptData(selectedRide.id)}
+          isDecrypting={fheIsDecrypting}
         />
       )}
-
+      
       {transactionStatus.visible && (
-        <div className="transaction-toast">
-          <div className={`toast-content ${transactionStatus.status}`}>
+        <div className={`transaction-toast ${transactionStatus.status}`}>
+          <div className="toast-content">
             {transactionStatus.status === "pending" && <div className="spinner"></div>}
-            {transactionStatus.status === "success" && "✓"}
-            {transactionStatus.status === "error" && "✗"}
+            {transactionStatus.status === "success" && <span>✓</span>}
+            {transactionStatus.status === "error" && <span>✗</span>}
             <span>{transactionStatus.message}</span>
           </div>
         </div>
@@ -511,9 +515,9 @@ const App: React.FC = () => {
   );
 };
 
-const CreateRideModal: React.FC<{
-  onSubmit: () => void;
-  onClose: () => void;
+const ModalCreateRide: React.FC<{
+  onSubmit: () => void; 
+  onClose: () => void; 
   creating: boolean;
   rideData: any;
   setRideData: (data: any) => void;
@@ -521,78 +525,84 @@ const CreateRideModal: React.FC<{
 }> = ({ onSubmit, onClose, creating, rideData, setRideData, isEncrypting }) => {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    setRideData({ ...rideData, [name]: value });
+    if (name === 'distance') {
+      const intValue = value.replace(/[^\d]/g, '');
+      setRideData({ ...rideData, [name]: intValue });
+    } else {
+      setRideData({ ...rideData, [name]: value });
+    }
   };
 
   return (
     <div className="modal-overlay">
-      <div className="modal">
+      <div className="create-ride-modal">
         <div className="modal-header">
           <h2>Create New Ride</h2>
-          <button onClick={onClose} className="close-btn">×</button>
+          <button onClick={onClose} className="close-modal">×</button>
         </div>
         
         <div className="modal-body">
           <div className="fhe-notice">
-            <strong>FHE Protected Ride</strong>
-            <p>Distance will be encrypted using Zama FHE technology</p>
+            <strong>FHE 🔐 Protection</strong>
+            <p>Distance data will be encrypted with Zama FHE (Integer only)</p>
           </div>
-
+          
           <div className="form-group">
             <label>Ride Name *</label>
-            <input
-              type="text"
-              name="name"
-              value={rideData.name}
-              onChange={handleChange}
-              placeholder="Enter ride name..."
+            <input 
+              type="text" 
+              name="name" 
+              value={rideData.name} 
+              onChange={handleChange} 
+              placeholder="Morning commute..." 
             />
           </div>
-
+          
           <div className="form-group">
             <label>Start Location *</label>
-            <input
-              type="text"
-              name="startLocation"
-              value={rideData.startLocation}
-              onChange={handleChange}
-              placeholder="Enter start location..."
+            <input 
+              type="text" 
+              name="startLocation" 
+              value={rideData.startLocation} 
+              onChange={handleChange} 
+              placeholder="Enter start location..." 
             />
           </div>
-
+          
           <div className="form-group">
             <label>End Location *</label>
-            <input
-              type="text"
-              name="endLocation"
-              value={rideData.endLocation}
-              onChange={handleChange}
-              placeholder="Enter destination..."
+            <input 
+              type="text" 
+              name="endLocation" 
+              value={rideData.endLocation} 
+              onChange={handleChange} 
+              placeholder="Enter destination..." 
             />
           </div>
-
+          
           <div className="form-group">
-            <label>Distance (km) *</label>
-            <input
-              type="number"
-              name="distance"
-              value={rideData.distance}
-              onChange={handleChange}
-              placeholder="Enter distance..."
+            <label>Distance (km, Integer only) *</label>
+            <input 
+              type="number" 
+              name="distance" 
+              value={rideData.distance} 
+              onChange={handleChange} 
+              placeholder="Enter distance..." 
+              step="1"
               min="0"
             />
-            <div className="data-label">FHE Encrypted Integer</div>
+            <div className="data-type-label">FHE Encrypted Integer</div>
           </div>
         </div>
-
+        
         <div className="modal-footer">
           <button onClick={onClose} className="cancel-btn">Cancel</button>
           <button 
-            onClick={onSubmit}
-            disabled={creating || isEncrypting || !rideData.name || !rideData.startLocation || !rideData.endLocation || !rideData.distance}
+            onClick={onSubmit} 
+            disabled={creating || isEncrypting || !rideData.name || !rideData.startLocation || !rideData.endLocation || !rideData.distance} 
             className="submit-btn"
           >
-            {creating || isEncrypting ? "Encrypting..." : "Create Ride"}
+            {creating || isEncrypting ? "Encrypting and Creating..." : "Create Ride"}
           </button>
         </div>
       </div>
@@ -603,23 +613,21 @@ const CreateRideModal: React.FC<{
 const RideDetailModal: React.FC<{
   ride: RideData;
   onClose: () => void;
-  decryptedDistance: number | null;
-  isDecrypting: boolean;
   decryptData: () => Promise<number | null>;
-}> = ({ ride, onClose, decryptedDistance, isDecrypting, decryptData }) => {
+  isDecrypting: boolean;
+}> = ({ ride, onClose, decryptData, isDecrypting }) => {
   const handleDecrypt = async () => {
-    if (decryptedDistance !== null) return;
     await decryptData();
   };
 
   return (
     <div className="modal-overlay">
-      <div className="modal">
+      <div className="ride-detail-modal">
         <div className="modal-header">
           <h2>Ride Details</h2>
-          <button onClick={onClose} className="close-btn">×</button>
+          <button onClick={onClose} className="close-modal">×</button>
         </div>
-
+        
         <div className="modal-body">
           <div className="ride-info">
             <div className="info-item">
@@ -627,74 +635,51 @@ const RideDetailModal: React.FC<{
               <strong>{ride.name}</strong>
             </div>
             <div className="info-item">
-              <span>Start:</span>
-              <strong>{ride.startLocation}</strong>
-            </div>
-            <div className="info-item">
-              <span>Destination:</span>
-              <strong>{ride.endLocation}</strong>
+              <span>Route:</span>
+              <strong>{ride.startLocation} → {ride.endLocation}</strong>
             </div>
             <div className="info-item">
               <span>Match Score:</span>
               <strong>{ride.matchScore}%</strong>
             </div>
+            <div className="info-item">
+              <span>Created:</span>
+              <strong>{new Date(ride.timestamp * 1000).toLocaleDateString()}</strong>
+            </div>
           </div>
-
-          <div className="encrypted-section">
-            <h3>Encrypted Distance Data</h3>
+          
+          <div className="data-section">
+            <h3>Encrypted Data</h3>
+            
             <div className="data-row">
-              <span>Distance:</span>
-              <strong>
-                {ride.isVerified ? 
-                  `${ride.decryptedValue}km (Verified)` : 
-                  decryptedDistance !== null ? 
-                  `${decryptedDistance}km (Decrypted)` : 
-                  "🔒 Encrypted"
+              <div className="data-label">Distance:</div>
+              <div className="data-value">
+                {ride.isVerified && ride.decryptedValue ? 
+                  `${ride.decryptedValue} km (Verified)` : 
+                  "🔒 FHE Encrypted"
                 }
-              </strong>
+              </div>
               <button 
-                onClick={handleDecrypt}
+                className={`decrypt-btn ${ride.isVerified ? 'decrypted' : ''}`}
+                onClick={handleDecrypt} 
                 disabled={isDecrypting || ride.isVerified}
-                className={`decrypt-btn ${ride.isVerified ? 'verified' : ''}`}
               >
-                {isDecrypting ? "Decrypting..." : 
-                 ride.isVerified ? "Verified" : 
-                 decryptedDistance !== null ? "Decrypted" : "Decrypt"}
+                {isDecrypting ? "Decrypting..." : ride.isVerified ? "✅ Verified" : "🔓 Verify"}
               </button>
             </div>
-          </div>
-
-          {ride.isVerified || decryptedDistance !== null ? (
-            <div className="analysis-section">
-              <h3>Route Analysis</h3>
-              <div className="analysis-grid">
-                <div className="analysis-item">
-                  <span>Compatibility</span>
-                  <div className="score-bar">
-                    <div 
-                      className="bar-fill" 
-                      style={{ width: `${ride.matchScore}%` }}
-                    >
-                      {ride.matchScore}%
-                    </div>
-                  </div>
-                </div>
-                <div className="analysis-item">
-                  <span>Efficiency</span>
-                  <div className="score-bar">
-                    <div 
-                      className="bar-fill" 
-                      style={{ width: `${100 - ride.publicValue1 * 5}%` }}
-                    >
-                      {100 - ride.publicValue1 * 5}%
-                    </div>
-                  </div>
-                </div>
-              </div>
+            
+            <div className="fhe-explanation">
+              <h4>How FHE Protects Your Ride:</h4>
+              <ul>
+                <li>📍 Locations are encrypted on-chain</li>
+                <li>🧮 Matching happens through homomorphic computation</li>
+                <li>🔐 Only you can decrypt your specific data</li>
+                <li>✅ On-chain verification ensures data integrity</li>
+              </ul>
             </div>
-          ) : null}
+          </div>
         </div>
-
+        
         <div className="modal-footer">
           <button onClick={onClose} className="close-btn">Close</button>
         </div>
